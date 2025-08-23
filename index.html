@@ -13,7 +13,7 @@
             background-color: #ffffff;
         }
         .hero-bg {
-            background: url('https://images.unsplash.com/photo-1553440569-b2dc59b2ae92?q=80&w=2070&auto=format&fit=crop&ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D');
+            background: url('https://images.megapixl.com/mpt/065083360935.jpg'); /* <-- NEW IMAGE URL HERE */
             background-size: cover;
             background-position: center;
         }
@@ -46,7 +46,7 @@
             100% { transform: rotate(360deg); }
         }
         /* Custom styles for parsed markdown */
-        #results h2, #trim-selection h2 {
+        #results h2, #trim-selection h2, #suggestion h2 {
             font-size: 1.25rem;
             font-weight: 700;
             color: #111827;
@@ -112,20 +112,28 @@
             padding-top: 1rem;
             border-top: 1px solid #e5e7eb;
          }
-         .trim-button {
-            display: block;
-            width: 100%;
+         .trim-button, .suggestion-button {
+            display: inline-block;
             text-align: left;
-            padding: 0.75rem 1rem;
+            padding: 0.75rem 1.5rem;
             border: 1px solid #e5e7eb;
             border-radius: 0.5rem;
+            margin-right: 0.5rem;
             margin-bottom: 0.5rem;
             transition: all 0.2s ease-in-out;
          }
-         .trim-button:hover {
+         .trim-button:hover, .suggestion-button:hover {
             background-color: #f3f4f6;
             border-color: #d1d5db;
             cursor: pointer;
+         }
+         .suggestion-button.primary {
+            background-color: #2563eb;
+            color: white;
+            border-color: transparent;
+         }
+         .suggestion-button.primary:hover {
+             background-color: #1d4ed8;
          }
     </style>
 </head>
@@ -174,7 +182,7 @@
             <div id="loading" class="hidden p-8 text-center">
                 <div class="flex justify-center items-center">
                     <div class="loader ease-linear rounded-full border-4 border-t-4 border-gray-200 h-12 w-12"></div>
-                    <p class="ml-4 text-gray-600 text-lg">Calculating your results...</p>
+                    <p class="ml-4 text-gray-600 text-lg">Searching for vehicle data...</p>
                 </div>
             </div>
             
@@ -193,6 +201,10 @@
                 </div>
             </div>
             
+            <div id="suggestion" class="hidden bg-white rounded-xl shadow-lg p-6 md:p-8 mb-8">
+                 <!-- Spelling suggestion will be injected here -->
+            </div>
+
             <div id="trim-selection" class="hidden bg-white rounded-xl shadow-lg p-6 md:p-8 mb-8">
                 <!-- Trim selection will be injected here -->
             </div>
@@ -218,10 +230,11 @@
         const errorDiv = document.getElementById('error');
         const errorMessageSpan = document.getElementById('errorMessage');
         const trimSelectionDiv = document.getElementById('trim-selection');
+        const suggestionDiv = document.getElementById('suggestion');
 
-        calculateBtn.addEventListener('click', getTaxCalculation);
+        calculateBtn.addEventListener('click', handleInitialSearch);
 
-        async function getTaxCalculation() {
+        async function handleInitialSearch() {
             const salary = salaryInput.value;
             const taxCode = taxCodeInput.value;
             const carModel = carModelInput.value;
@@ -232,32 +245,74 @@
             }
 
             showLoading();
-            trimSelectionDiv.classList.add('hidden');
-            resultsDiv.innerHTML = '';
-
-            const initialPrompt = `
-                A user in a UK tax calculator app has entered "${carModel}" as the car model.
-                Is this a specific, identifiable trim level (e.g., 'Ford Focus ST-Line 1.0 EcoBoost 125PS') or a general model name (e.g., 'Ford Focus')?
-                If it is a specific trim, respond with only the word "SPECIFIC".
-                If it is a general model name, respond with a Markdown list of the current (2025 model year) primary UK trim/engine variants available. For example:
-                - ST-Line 1.0 EcoBoost 125PS
-                - Titanium 1.0 EcoBoost 155PS Hybrid
-                - Active 1.5 EcoBlue 120PS Auto
-                Do not add any other text, headings, or explanations.
-            `;
             
+            const spellCheckPrompt = `
+                You are a spell checker for car models. A user entered "${carModel}". Is this a likely misspelling of a common UK car model? 
+                If you are confident it's a misspelling, respond ONLY with the corrected name (e.g., "Ford Focus"). 
+                If you are not confident or it seems correct, respond ONLY with the original input "${carModel}".
+            `;
+
             try {
-                const modelCheckResponse = await callGeminiApi(initialPrompt);
-
-                if (modelCheckResponse.trim().toUpperCase() === "SPECIFIC") {
-                    await performFinalCalculation(carModel);
+                const correctedModel = await callGeminiApi(spellCheckPrompt);
+                if (correctedModel.toLowerCase() !== carModel.toLowerCase()) {
+                    displaySpellingSuggestion(correctedModel, carModel);
                 } else {
-                    displayTrimOptions(modelCheckResponse, carModel);
+                    await findTrimsOrCalculate(carModel);
                 }
-
             } catch (error) {
-                 console.error("Error during initial model check:", error);
-                 showError("Could not verify the car model. Please try being more specific or check the spelling.");
+                console.error("Error during spell check:", error);
+                showError("Could not verify the car model. Please check the spelling.");
+            }
+        }
+
+        function displaySpellingSuggestion(correctedModel, originalModel) {
+            hideLoading();
+            let html = `
+                <div class="text-center">
+                    <p class="text-lg text-gray-700 mb-4">Did you mean <strong>${correctedModel}</strong>?</p>
+                    <button id="confirm-suggestion" class="suggestion-button primary">Yes, use ${correctedModel}</button>
+                    <button id="reject-suggestion" class="suggestion-button">No, search for ${originalModel}</button>
+                </div>
+            `;
+            suggestionDiv.innerHTML = html;
+            suggestionDiv.classList.remove('hidden');
+
+            document.getElementById('confirm-suggestion').addEventListener('click', () => {
+                suggestionDiv.classList.add('hidden');
+                findTrimsOrCalculate(correctedModel);
+            });
+            document.getElementById('reject-suggestion').addEventListener('click', () => {
+                suggestionDiv.classList.add('hidden');
+                findTrimsOrCalculate(originalModel);
+            });
+        }
+
+        async function findTrimsOrCalculate(modelToUse) {
+            showLoading();
+
+            const trimCheckPrompt = `
+                You are a vehicle data expert. A user has entered "${modelToUse}".
+                Perform a targeted web search for "UK 2025 ${modelToUse} trim levels".
+                Based on the search results from reliable UK sources (like manufacturer websites, Autotrader, Parkers), determine if the user's input is a specific trim or a general model.
+
+                - If the input appears to be a specific, identifiable trim level, respond with only the word "SPECIFIC".
+                - If the input is a general model name, respond with a Markdown list of the primary UK trim/engine variants available for the 2025 model year.
+                - If no reliable data can be found, respond with "NOT_FOUND".
+                Do not add any other text.
+            `;
+
+            try {
+                const response = await callGeminiApi(trimCheckPrompt);
+                if (response.trim().toUpperCase() === "SPECIFIC") {
+                    await performFinalCalculation(modelToUse);
+                } else if (response.trim().toUpperCase() === "NOT_FOUND") {
+                    showError(`Could not find reliable data for "${modelToUse}". Please check the spelling or try a different model.`);
+                } else {
+                    displayTrimOptions(response, modelToUse);
+                }
+            } catch (error) {
+                console.error("Error during trim check:", error);
+                showError(`Could not find specific versions for "${modelToUse}". Please try being more specific.`);
             }
         }
 
@@ -280,13 +335,11 @@
             document.querySelectorAll('.trim-button').forEach(button => {
                 button.addEventListener('click', (e) => {
                     const selectedTrim = e.target.getAttribute('data-trim');
-                    const fullModel = `${originalModel} ${selectedTrim}`;
                     trimSelectionDiv.classList.add('hidden');
-                    performFinalCalculation(fullModel);
+                    performFinalCalculation(selectedTrim);
                 });
             });
         }
-
 
         async function performFinalCalculation(specificCarModel) {
              const salary = salaryInput.value;
@@ -294,26 +347,28 @@
              showLoading();
 
              const finalPrompt = `
-                You are a UK tax expert providing calculations for a web app. A user has a gross annual salary of £${salary}, a tax code of ${taxCode}, and is considering a "${specificCarModel}" as a company car. 
+                You are a UK tax expert with access to real-time web search. A user has a gross annual salary of £${salary}, a tax code of ${taxCode}, and has selected a "${specificCarModel}" as their company car.
                 
-                Provide a detailed breakdown of their take-home pay based on the 2025/2026 UK tax year for England.
+                First, perform targeted web searches for a "2025 ${specificCarModel}" from reliable UK sources (e.g., manufacturer's site, Parkers, Autotrader) to find its exact P11D value and official CO2 emissions (g/km).
 
-                Your entire response MUST be formatted in Markdown. Do not include any introductory or concluding sentences outside of the Markdown structure. Use "£" for currency and format numbers with commas where appropriate.
+                Then, using this retrieved data, provide a detailed breakdown of their take-home pay based on the 2025/2026 UK tax year for England.
+
+                Your entire response MUST be formatted in Markdown. Do not include any introductory or concluding sentences. Use "£" for currency and format numbers with commas.
 
                 Start with a level 2 heading "Salary Breakdown (Without Car)".
-                Then, create a Markdown table showing the take-home pay calculation for the £${salary} salary *without* any company car. The table should have two columns: "Description" and "Amount". Include rows for: Gross Annual Salary, Tax-Free Personal Allowance, Taxable Income, Income Tax @ 20%, National Insurance, and then a final row for **Estimated Annual Take-Home**.
+                Create a Markdown table for a £${salary} salary without a car. Columns: "Description", "Amount". Rows: Gross Annual Salary, Tax-Free Personal Allowance, Taxable Income, Income Tax @ 20%, National Insurance, and a final row for **Estimated Annual Take-Home**.
 
                 Next, add a level 2 heading "Company Car Tax Calculation".
-                Under this, create a Markdown list with the following details for the "${specificCarModel}":
+                Create a Markdown list using the data you found for the "${specificCarModel}":
                 - **Car Model:** ${specificCarModel}
-                - **Estimated P11D Value:** (Provide your best estimate, e.g., £45,000)
-                - **CO2 Emissions:** (Provide g/km, state 0g/km for EVs)
-                - **Benefit-in-Kind (BiK) Rate (2025/26):** (Provide the correct percentage, e.g., 3%)
-                - **Taxable Benefit (P11D x BiK Rate):** (Show the calculation, e.g., £45,000 x 3% = £1,350)
-                - **Annual Company Car Tax (Taxable Benefit x 20%):** (Show the calculation, e.g., £1,350 x 20% = £270)
+                - **P11D Value:** (The value you found via search)
+                - **CO2 Emissions:** (The value you found, state 0g/km for EVs)
+                - **Benefit-in-Kind (BiK) Rate (2025/26):** (The correct percentage based on the CO2)
+                - **Taxable Benefit (P11D x BiK Rate):** (Show the calculation)
+                - **Annual Company Car Tax (Taxable Benefit x 20%):** (Show the calculation)
 
                 Then, add a level 2 heading "Final Take-Home Pay Comparison".
-                Create a Markdown table comparing the take-home pay. It should have three columns: "Description", "Without Car", and "With Car". Use bold for the final row labels. Include rows for: Estimated Annual Take-Home, **Estimated Monthly Take-Home**, and **Monthly Cost of Car**. The "Monthly Cost of Car" row should show "£0.00" in the 'Without Car' column and the calculated monthly tax in the 'With Car' column, and this cell should have a class 'cost-cell'. Add the class "comparison-table" to the table.
+                Create a Markdown table comparing take-home pay. Columns: "Description", "Without Car", "With Car". Rows: Estimated Annual Take-Home, **Estimated Monthly Take-Home**, **Monthly Cost of Car**. The "Monthly Cost of Car" cell for "With Car" should have a class 'cost-cell'. Add the class "comparison-table" to the table.
 
                 Finally, add a horizontal rule and a disclaimer in italics: "*Disclaimer: These figures are estimates for the 2025/2026 tax year in England and are for illustrative purposes only. The car's final P11D value may vary. This calculation does not account for pensions, student loans, or other deductions. Please consult with a financial advisor for precise figures.*"
             `;
@@ -380,6 +435,7 @@
         function showLoading() {
             resultsDiv.style.display = 'none';
             errorDiv.style.display = 'none';
+            suggestionDiv.classList.add('hidden');
             trimSelectionDiv.classList.add('hidden');
             loadingDiv.style.display = 'block';
         }
@@ -397,6 +453,7 @@
         function showError(message) {
             loadingDiv.style.display = 'none';
             resultsDiv.style.display = 'none';
+            suggestionDiv.classList.add('hidden');
             trimSelectionDiv.classList.add('hidden');
             errorMessageSpan.textContent = message;
             errorDiv.style.display = 'block';
